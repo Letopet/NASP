@@ -1,0 +1,97 @@
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('NASP Sync')
+    .addItem('Sync Sales → PIP', 'syncSalesToPIP')
+    .addItem('Sync Sales → DIS', 'syncSalesToDIS')
+    .addToUi();
+}
+
+// Normalize IDs: trim spaces, remove non-breaking spaces, stringify
+function normalizeId(v) {
+  if (v === null || v === undefined) return '';
+  return String(v).replace(/\u00A0/g, ' ').trim();
+}
+
+/**
+ * Generic sync:
+ * - Matches targetSheet[targetIdCol] to Sales!A
+ * - Copies Sales!B:O (with headers) into targetSheet starting at targetStartCol (row 1 for headers, row 2 for data)
+ */
+function syncSalesTo(targetSheetName, targetIdCol, targetStartCol) {
+  const ss = SpreadsheetApp.getActive();
+  const SALES_SHEET = 'Sales';
+
+  // Sales columns (1-based)
+  const SALES_ID_COL = 1;          // Sales!A
+  const SALES_FIRST_DATA_COL = 2;  // Sales!B
+  const SALES_LAST_DATA_COL  = 15; // Sales!O (A=1, O=15) => B..O width = 14
+
+  const shSales = ss.getSheetByName(SALES_SHEET);
+  const shTarget = ss.getSheetByName(targetSheetName);
+  if (!shSales || !shTarget) {
+    throw new Error('Could not find sheets named "Sales" and "' + targetSheetName + '".');
+  }
+
+  const salesLastRow = shSales.getLastRow();
+  if (salesLastRow < 2) {
+    throw new Error('Sales sheet has no data (need headers in row 1 and data from row 2).');
+  }
+
+  // Read Sales A:O (IDs + data)
+  const salesRange = shSales.getRange(1, SALES_ID_COL, salesLastRow, SALES_LAST_DATA_COL);
+  const salesValues = salesRange.getValues(); // [ [A..O], ... ]
+  const headerRow = salesValues[0];
+  const headerToCopy = headerRow.slice(SALES_FIRST_DATA_COL - 1, SALES_LAST_DATA_COL); // B..O
+  const width = SALES_LAST_DATA_COL - SALES_FIRST_DATA_COL + 1; // 14 cols
+
+  // Build NASP → payload map (B..O). Last occurrence wins if duplicates.
+  const lookup = new Map();
+  for (let r = 1; r < salesValues.length; r++) {
+    const row = salesValues[r];
+    const id  = normalizeId(row[SALES_ID_COL - 1]); // A
+    if (!id) continue;
+    const payload = row.slice(SALES_FIRST_DATA_COL - 1, SALES_LAST_DATA_COL); // B..O
+    lookup.set(id, payload);
+  }
+
+  // Write headers into target row 1 (AX:BK or wherever targetStartCol points)
+  shTarget.getRange(1, targetStartCol, 1, width).setValues([headerToCopy]);
+
+  const targetLastRow = shTarget.getLastRow();
+  if (targetLastRow < 2) {
+    // No data rows; headers set already
+    SpreadsheetApp.getActive().toast(`${targetSheetName}: Headers written. No data rows found.`, 'NASP Sync', 5);
+    return;
+  }
+
+  // Read target IDs (targetIdCol) from row 2 downward
+  const idRange = shTarget.getRange(2, targetIdCol, targetLastRow - 1, 1);
+  const ids = idRange.getValues(); // [[id], [id], ...]
+
+  // Prepare output matrix for target write (row 2..n, targetStartCol..targetStartCol+width-1)
+  const out = Array.from({ length: ids.length }, () => Array(width).fill(''));
+  let matched = 0;
+  for (let i = 0; i < ids.length; i++) {
+    const id = normalizeId(ids[i][0]);
+    if (!id) continue;
+    const payload = lookup.get(id);
+    if (payload) {
+      out[i] = payload;
+      matched++;
+    }
+  }
+
+  shTarget.getRange(2, targetStartCol, out.length, width).setValues(out);
+  SpreadsheetApp.getActive().toast(`${targetSheetName}: Synced ${matched} matched rows.`, 'NASP Sync', 5);
+}
+
+// Wrappers
+function syncSalesToPIP() {
+  // PIP!AD (col 30), write starting at AX (col 50)
+  return syncSalesTo('PIP', 30, 50);
+}
+
+function syncSalesToDIS() {
+  // DIS!AA (col 27), write starting at AX (col 50) — change 50 if you want a different start
+  return syncSalesTo('DIS', 27, 50);
+}
