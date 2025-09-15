@@ -1,0 +1,83 @@
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('NASP Sync')
+    .addItem('Sync Sales → PIP', 'syncSalesToPIP')
+    .addToUi();
+}
+
+// Normalize IDs: trim spaces, remove non-breaking spaces, stringify
+function normalizeId(v) {
+  if (v === null || v === undefined) return '';
+  return String(v).replace(/\u00A0/g, ' ').trim();
+}
+
+/**
+ * Matches PIP!AD (NASP ID) to Sales!A and writes Sales!B:O into PIP!AX:BK.
+ * Also copies headers from Sales!B:O to PIP!AX:BK row 1.
+ */
+function syncSalesToPIP() {
+  const ss = SpreadsheetApp.getActive();
+  const SALES_SHEET = 'Sales';
+  const PIP_SHEET   = 'PIP';
+
+  // Column indexes (1-based)
+  const SALES_ID_COL = 1;   // Sales!A
+  const SALES_FIRST_DATA_COL = 2;  // Sales!B
+  const SALES_LAST_DATA_COL  = 15; // Sales!O
+
+  const PIP_ID_COL = 30;    // PIP!AD
+  const PIP_TARGET_START_COL = 50; // PIP!AX
+
+  const shSales = ss.getSheetByName(SALES_SHEET);
+  const shPip   = ss.getSheetByName(PIP_SHEET);
+  if (!shSales || !shPip) {
+    throw new Error('Could not find sheets named "Sales" and "PIP".');
+  }
+
+  const salesLastRow = shSales.getLastRow();
+  if (salesLastRow < 2) {
+    throw new Error('Sales sheet has no data (need headers in row 1 and data from row 2).');
+  }
+
+  // Read Sales A:O (IDs + data)
+  const salesRange = shSales.getRange(1, SALES_ID_COL, salesLastRow, SALES_LAST_DATA_COL);
+  const salesValues = salesRange.getValues(); // [ [A..O], ... ]
+  const headerRow = salesValues[0];
+  const headerToCopy = headerRow.slice(SALES_FIRST_DATA_COL - 1, SALES_LAST_DATA_COL); // B..O
+
+  // Build NASP → payload map (B..O). Last occurrence wins if duplicates.
+  const lookup = new Map();
+  for (let r = 1; r < salesValues.length; r++) {
+    const row = salesValues[r];
+    const id  = normalizeId(row[SALES_ID_COL - 1]); // A
+    if (!id) continue;
+    const payload = row.slice(SALES_FIRST_DATA_COL - 1, SALES_LAST_DATA_COL); // B..O (14 cols)
+    lookup.set(id, payload);
+  }
+
+  // Ensure headers in PIP!AX:BK row 1
+  const width = SALES_LAST_DATA_COL - SALES_FIRST_DATA_COL + 1; // 15-2+1 = 14
+  shPip.getRange(1, PIP_TARGET_START_COL, 1, width).setValues([headerToCopy]);
+
+  const pipLastRow = shPip.getLastRow();
+  if (pipLastRow < 2) {
+    // No rows to fill; headers already set
+    return;
+  }
+
+  // Read PIP IDs (AD) from row 2 downward
+  const pipIdRange = shPip.getRange(2, PIP_ID_COL, pipLastRow - 1, 1);
+  const pipIds = pipIdRange.getValues(); // [[id], [id], ...]
+
+  // Prepare output for PIP!AX:BK
+  const out = Array.from({ length: pipIds.length }, () => Array(width).fill(''));
+  for (let i = 0; i < pipIds.length; i++) {
+    const id = normalizeId(pipIds[i][0]);
+    if (!id) continue;
+    const payload = lookup.get(id);
+    if (payload) out[i] = payload;
+  }
+
+  // Write to PIP!AX:BK (row 2 down)
+  shPip.getRange(2, PIP_TARGET_START_COL, out.length, width).setValues(out);
+}
