@@ -5,11 +5,10 @@ DECLARE
   v_needle  VARCHAR2(200) := 'A34612';
   v_sql     CLOB;
 BEGIN
-  /* Build UNION ALL across all searchable columns (version-safe) */
+  -- Build a UNION ALL across all searchable columns
   SELECT LISTAGG(
            'SELECT t.ROWID rid, '||
            ''''||column_name||''' col, '||
-           -- CLEAN value = exact match of A34612 inside the cell
            'REGEXP_SUBSTR('||
              CASE 
                WHEN data_type IN ('CLOB','NCLOB') 
@@ -17,7 +16,6 @@ BEGIN
                ELSE 'TO_CHAR(t.'||column_name||')'
              END ||
            ', :re, 1, 1, ''i'') clean_value, '||
-           -- original cell snippet
            CASE 
              WHEN data_type IN ('CLOB','NCLOB') 
                THEN 'DBMS_LOB.SUBSTR(t.'||column_name||',4000,1)'
@@ -37,7 +35,7 @@ BEGIN
   FROM all_tab_columns
   WHERE owner = v_owner
     AND table_name = v_table
-    AND data_type NOT IN ('BLOB','RAW','LONG RAW','BFILE','ROWID','UROWID','LONG');  -- skip non-searchable
+    AND data_type NOT IN ('BLOB','RAW','LONG RAW','BFILE','ROWID','UROWID','LONG');
 
   IF v_sql IS NULL THEN
     DBMS_OUTPUT.PUT_LINE('No searchable columns found in '||v_owner||'.'||v_table);
@@ -48,14 +46,14 @@ BEGIN
   DBMS_OUTPUT.PUT_LINE(RPAD('ROWID',19)||' | '||RPAD('COLUMN',32)||' | CLEAN_VALUE | ORIGINAL (truncated)');
   DBMS_OUTPUT.PUT_LINE(RPAD('-',19,'-')||'-+-'||RPAD('-',32,'-')||'-+-------------+----------------------');
 
-  -- Execute the UNION and print
+  -- Execute the UNION and print results
   DECLARE
     c   INTEGER := DBMS_SQL.OPEN_CURSOR;
     d   INTEGER;
     v_r UROWID; v_c VARCHAR2(128); v_clean VARCHAR2(4000); v_orig VARCHAR2(4000);
   BEGIN
     DBMS_SQL.PARSE(c, v_sql, DBMS_SQL.NATIVE);
-    DBMS_SQL.BIND_VARIABLE(c, ':re', 'A34612');  -- case-insensitive regex
+    DBMS_SQL.BIND_VARIABLE(c, ':re', 'A34612');
     DBMS_SQL.DEFINE_COLUMN(c, 1, v_r);
     DBMS_SQL.DEFINE_COLUMN(c, 2, v_c, 128);
     DBMS_SQL.DEFINE_COLUMN(c, 3, v_clean, 4000);
@@ -74,4 +72,3 @@ BEGIN
     DBMS_SQL.CLOSE_CURSOR(c);
   END;
 END;
-/
