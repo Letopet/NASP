@@ -1,16 +1,21 @@
 SET SERVEROUTPUT ON SIZE UNLIMITED
 DECLARE
-  v_owner   VARCHAR2(128) := USER;               -- change to 'YOUR_SCHEMA' if needed
+  v_owner   VARCHAR2(128) := USER;                   -- change to 'YOUR_SCHEMA' if needed
   v_table   VARCHAR2(128) := 'LS_LGCY_FNE_CIR_CHRG';
-  v_needle  VARCHAR2(200) := 'A34612';           -- what you're looking for
+  v_needle  VARCHAR2(200) := 'A34612';
   v_sql     CLOB;
 BEGIN
-  -- Build a UNION ALL that scans all searchable columns
+  /* Build a UNION ALL that checks all searchable columns and extracts the clean match */
   SELECT LISTAGG(
-           'SELECT t.ROWID rid, '''||column_name||''' col, TO_CHAR(t.'||column_name||') val '||
+           'SELECT t.ROWID AS rid, '||
+           ''''||column_name||''' AS column_name, '||
+           -- cleaned value: exactly 'A34612', regardless of surrounding text
+           'REGEXP_SUBSTR(TO_CHAR(t.'||column_name||'), :re, 1, 1, ''i'') AS clean_value, '||
+           -- original cell content (snippet)
+           'TO_CHAR(t.'||column_name||') AS original_value '||
            'FROM '||owner||'.'||table_name||' t '||
            'WHERE REGEXP_LIKE(TO_CHAR(t.'||column_name||'), :re, ''i'')',
-           ' UNION ALL '
+           CHR(10)||'UNION ALL'||CHR(10)
          ) WITHIN GROUP (ORDER BY column_id)
     INTO v_sql
   FROM all_tab_columns
@@ -28,27 +33,35 @@ BEGIN
     RETURN;
   END IF;
 
-  DBMS_OUTPUT.PUT_LINE('Matches in '||v_owner||'.'||v_table||' for "'||v_needle||'":');
-  DBMS_OUTPUT.PUT_LINE(RPAD('ROWID',19)||' | '||RPAD('COLUMN',32)||' | VALUE (snippet)');
-  DBMS_OUTPUT.PUT_LINE(RPAD('-',19,'-')||'-+-'||RPAD('-',32,'-')||'-'||RPAD('-',70,'-'));
+  DBMS_OUTPUT.PUT_LINE('Matches for "'||v_needle||'" in '||v_owner||'.'||v_table||':');
+  DBMS_OUTPUT.PUT_LINE(RPAD('ROWID',19)||' | '||RPAD('COLUMN',32)||
+                       ' | CLEAN_VALUE | ORIGINAL (truncated)');
+  DBMS_OUTPUT.PUT_LINE(RPAD('-',19,'-')||'-+-'||RPAD('-',32,'-')||
+                       '-+-------------+----------------------');
 
   -- Execute dynamically and print results
   DECLARE
     c   INTEGER := DBMS_SQL.OPEN_CURSOR;
     d   INTEGER;
-    v_r UROWID; v_c VARCHAR2(128); v_v VARCHAR2(4000);
+    v_r UROWID; v_c VARCHAR2(128); v_clean VARCHAR2(4000); v_orig VARCHAR2(4000);
   BEGIN
     DBMS_SQL.PARSE(c, v_sql, DBMS_SQL.NATIVE);
-    DBMS_SQL.BIND_VARIABLE(c, ':re', '.*'||v_needle||'.*');
+    -- regex that finds A34612 anywhere in the string (case-insensitive)
+    DBMS_SQL.BIND_VARIABLE(c, ':re', 'A34612');
     DBMS_SQL.DEFINE_COLUMN(c, 1, v_r);
     DBMS_SQL.DEFINE_COLUMN(c, 2, v_c, 128);
-    DBMS_SQL.DEFINE_COLUMN(c, 3, v_v, 4000);
+    DBMS_SQL.DEFINE_COLUMN(c, 3, v_clean, 4000);
+    DBMS_SQL.DEFINE_COLUMN(c, 4, v_orig, 4000);
     d := DBMS_SQL.EXECUTE(c);
     WHILE DBMS_SQL.FETCH_ROWS(c) > 0 LOOP
       DBMS_SQL.COLUMN_VALUE(c, 1, v_r);
       DBMS_SQL.COLUMN_VALUE(c, 2, v_c);
-      DBMS_SQL.COLUMN_VALUE(c, 3, v_v);
-      DBMS_OUTPUT.PUT_LINE(RPAD(v_r,19)||' | '||RPAD(v_c,32)||' | '||SUBSTR(v_v,1,70));
+      DBMS_SQL.COLUMN_VALUE(c, 3, v_clean);
+      DBMS_SQL.COLUMN_VALUE(c, 4, v_orig);
+      DBMS_OUTPUT.PUT_LINE(
+        RPAD(v_r,19)||' | '||RPAD(v_c,32)||' | '||
+        RPAD(NVL(v_clean,'<no match>'),11)||' | '||SUBSTR(v_orig,1,80)
+      );
     END LOOP;
     DBMS_SQL.CLOSE_CURSOR(c);
   END;
