@@ -1,0 +1,56 @@
+SET SERVEROUTPUT ON SIZE UNLIMITED
+DECLARE
+  v_owner   VARCHAR2(128) := USER;               -- change to 'YOUR_SCHEMA' if needed
+  v_table   VARCHAR2(128) := 'LS_LGCY_FNE_CIR_CHRG';
+  v_needle  VARCHAR2(200) := 'A34612';           -- what you're looking for
+  v_sql     CLOB;
+BEGIN
+  -- Build a UNION ALL that scans all searchable columns
+  SELECT LISTAGG(
+           'SELECT t.ROWID rid, '''||column_name||''' col, TO_CHAR(t.'||column_name||') val '||
+           'FROM '||owner||'.'||table_name||' t '||
+           'WHERE REGEXP_LIKE(TO_CHAR(t.'||column_name||'), :re, ''i'')',
+           ' UNION ALL '
+         ) WITHIN GROUP (ORDER BY column_id)
+    INTO v_sql
+  FROM all_tab_columns
+  WHERE owner = v_owner
+    AND table_name = v_table
+    AND hidden_column = 'NO'
+    AND (
+      data_type IN ('CHAR','VARCHAR2','NCHAR','NVARCHAR2','CLOB',
+                    'NUMBER','FLOAT','BINARY_FLOAT','BINARY_DOUBLE','DATE')
+      OR data_type LIKE 'TIMESTAMP%'
+    );
+
+  IF v_sql IS NULL THEN
+    DBMS_OUTPUT.PUT_LINE('No searchable columns found.');
+    RETURN;
+  END IF;
+
+  DBMS_OUTPUT.PUT_LINE('Matches in '||v_owner||'.'||v_table||' for "'||v_needle||'":');
+  DBMS_OUTPUT.PUT_LINE(RPAD('ROWID',19)||' | '||RPAD('COLUMN',32)||' | VALUE (snippet)');
+  DBMS_OUTPUT.PUT_LINE(RPAD('-',19,'-')||'-+-'||RPAD('-',32,'-')||'-'||RPAD('-',70,'-'));
+
+  -- Execute dynamically and print results
+  DECLARE
+    c   INTEGER := DBMS_SQL.OPEN_CURSOR;
+    d   INTEGER;
+    v_r UROWID; v_c VARCHAR2(128); v_v VARCHAR2(4000);
+  BEGIN
+    DBMS_SQL.PARSE(c, v_sql, DBMS_SQL.NATIVE);
+    DBMS_SQL.BIND_VARIABLE(c, ':re', '.*'||v_needle||'.*');
+    DBMS_SQL.DEFINE_COLUMN(c, 1, v_r);
+    DBMS_SQL.DEFINE_COLUMN(c, 2, v_c, 128);
+    DBMS_SQL.DEFINE_COLUMN(c, 3, v_v, 4000);
+    d := DBMS_SQL.EXECUTE(c);
+    WHILE DBMS_SQL.FETCH_ROWS(c) > 0 LOOP
+      DBMS_SQL.COLUMN_VALUE(c, 1, v_r);
+      DBMS_SQL.COLUMN_VALUE(c, 2, v_c);
+      DBMS_SQL.COLUMN_VALUE(c, 3, v_v);
+      DBMS_OUTPUT.PUT_LINE(RPAD(v_r,19)||' | '||RPAD(v_c,32)||' | '||SUBSTR(v_v,1,70));
+    END LOOP;
+    DBMS_SQL.CLOSE_CURSOR(c);
+  END;
+END;
+/
