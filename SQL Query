@@ -1,53 +1,61 @@
 SET SERVEROUTPUT ON SIZE UNLIMITED
 DECLARE
-  v_owner   VARCHAR2(128) := USER;                   -- change to 'YOUR_SCHEMA' if needed
+  v_owner   VARCHAR2(128) := USER;               -- change to 'YOUR_SCHEMA' if the table is there
   v_table   VARCHAR2(128) := 'LS_LGCY_FNE_CIR_CHRG';
   v_needle  VARCHAR2(200) := 'A34612';
   v_sql     CLOB;
 BEGIN
-  /* Build a UNION ALL that checks all searchable columns and extracts the clean match */
+  /* Build UNION ALL across all searchable columns (version-safe) */
   SELECT LISTAGG(
-           'SELECT t.ROWID AS rid, '||
-           ''''||column_name||''' AS column_name, '||
-           -- cleaned value: exactly 'A34612', regardless of surrounding text
-           'REGEXP_SUBSTR(TO_CHAR(t.'||column_name||'), :re, 1, 1, ''i'') AS clean_value, '||
-           -- original cell content (snippet)
-           'TO_CHAR(t.'||column_name||') AS original_value '||
+           'SELECT t.ROWID rid, '||
+           ''''||column_name||''' col, '||
+           -- CLEAN value = exact match of A34612 inside the cell
+           'REGEXP_SUBSTR('||
+             CASE 
+               WHEN data_type IN ('CLOB','NCLOB') 
+                 THEN 'DBMS_LOB.SUBSTR(t.'||column_name||',4000,1)'
+               ELSE 'TO_CHAR(t.'||column_name||')'
+             END ||
+           ', :re, 1, 1, ''i'') clean_value, '||
+           -- original cell snippet
+           CASE 
+             WHEN data_type IN ('CLOB','NCLOB') 
+               THEN 'DBMS_LOB.SUBSTR(t.'||column_name||',4000,1)'
+             ELSE 'TO_CHAR(t.'||column_name||')'
+           END || ' AS original_value '||
            'FROM '||owner||'.'||table_name||' t '||
-           'WHERE REGEXP_LIKE(TO_CHAR(t.'||column_name||'), :re, ''i'')',
+           'WHERE REGEXP_LIKE('||
+             CASE 
+               WHEN data_type IN ('CLOB','NCLOB') 
+                 THEN 'DBMS_LOB.SUBSTR(t.'||column_name||',4000,1)'
+               ELSE 'TO_CHAR(t.'||column_name||')'
+             END ||
+           ', :re, ''i'')',
            CHR(10)||'UNION ALL'||CHR(10)
          ) WITHIN GROUP (ORDER BY column_id)
     INTO v_sql
   FROM all_tab_columns
   WHERE owner = v_owner
     AND table_name = v_table
-    AND hidden_column = 'NO'
-    AND (
-      data_type IN ('CHAR','VARCHAR2','NCHAR','NVARCHAR2','CLOB',
-                    'NUMBER','FLOAT','BINARY_FLOAT','BINARY_DOUBLE','DATE')
-      OR data_type LIKE 'TIMESTAMP%'
-    );
+    AND data_type NOT IN ('BLOB','RAW','LONG RAW','BFILE','ROWID','UROWID','LONG');  -- skip non-searchable
 
   IF v_sql IS NULL THEN
-    DBMS_OUTPUT.PUT_LINE('No searchable columns found.');
+    DBMS_OUTPUT.PUT_LINE('No searchable columns found in '||v_owner||'.'||v_table);
     RETURN;
   END IF;
 
   DBMS_OUTPUT.PUT_LINE('Matches for "'||v_needle||'" in '||v_owner||'.'||v_table||':');
-  DBMS_OUTPUT.PUT_LINE(RPAD('ROWID',19)||' | '||RPAD('COLUMN',32)||
-                       ' | CLEAN_VALUE | ORIGINAL (truncated)');
-  DBMS_OUTPUT.PUT_LINE(RPAD('-',19,'-')||'-+-'||RPAD('-',32,'-')||
-                       '-+-------------+----------------------');
+  DBMS_OUTPUT.PUT_LINE(RPAD('ROWID',19)||' | '||RPAD('COLUMN',32)||' | CLEAN_VALUE | ORIGINAL (truncated)');
+  DBMS_OUTPUT.PUT_LINE(RPAD('-',19,'-')||'-+-'||RPAD('-',32,'-')||'-+-------------+----------------------');
 
-  -- Execute dynamically and print results
+  -- Execute the UNION and print
   DECLARE
     c   INTEGER := DBMS_SQL.OPEN_CURSOR;
     d   INTEGER;
     v_r UROWID; v_c VARCHAR2(128); v_clean VARCHAR2(4000); v_orig VARCHAR2(4000);
   BEGIN
     DBMS_SQL.PARSE(c, v_sql, DBMS_SQL.NATIVE);
-    -- regex that finds A34612 anywhere in the string (case-insensitive)
-    DBMS_SQL.BIND_VARIABLE(c, ':re', 'A34612');
+    DBMS_SQL.BIND_VARIABLE(c, ':re', 'A34612');  -- case-insensitive regex
     DBMS_SQL.DEFINE_COLUMN(c, 1, v_r);
     DBMS_SQL.DEFINE_COLUMN(c, 2, v_c, 128);
     DBMS_SQL.DEFINE_COLUMN(c, 3, v_clean, 4000);
@@ -60,7 +68,7 @@ BEGIN
       DBMS_SQL.COLUMN_VALUE(c, 4, v_orig);
       DBMS_OUTPUT.PUT_LINE(
         RPAD(v_r,19)||' | '||RPAD(v_c,32)||' | '||
-        RPAD(NVL(v_clean,'<no match>'),11)||' | '||SUBSTR(v_orig,1,80)
+        RPAD(NVL(v_clean,'<no match>'),11)||' | '||SUBSTR(v_orig,1,100)
       );
     END LOOP;
     DBMS_SQL.CLOSE_CURSOR(c);
